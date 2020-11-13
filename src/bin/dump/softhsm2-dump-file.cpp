@@ -33,6 +33,8 @@
 #include <config.h>
 
 #include "common.h"
+#include "SecureDataManager.h"
+#include "OSToken.h"
 
 // Attribute types on disk
 #define BOOLEAN_ATTR		0x1
@@ -45,6 +47,8 @@
 #define MAX_BYTES		0x3fffffff
 
 typedef AttributeTK<uint64_t, uint64_t, uint64_t> Attribute;
+
+SecureDataManager *sdm = NULL;
 
 // Attribute specialization
 template<>
@@ -435,7 +439,6 @@ void dump(FILE* stream)
 				printf("overflow length...\n");
 				return;
 			}
-			printf("(length %lu)\n", (unsigned long) len);
 
 			std::vector<uint8_t> value((size_t) len);
 			if (!readBytes(stream, value))
@@ -443,7 +446,17 @@ void dump(FILE* stream)
 				corrupt(stream);
 				return;
 			}
-			dumpBytes(value);
+            if (sdm) {
+                ByteString encrypted(value.data(), len);
+                ByteString plain;
+                sdm->decrypt(encrypted, plain);
+                printf("(length %lu)\n", (unsigned long) plain.size());
+                std::vector<uint8_t> plainv(plain.byte_str(), plain.byte_str() + plain.size());
+                dumpBytes(plainv);
+            } else {
+                printf("(length %lu)\n", (unsigned long) len);
+                dumpBytes(value);
+            }
 		}
 		else if (disktype == ATTRMAP_ATTR)
 		{
@@ -510,19 +523,33 @@ void dump(FILE* stream)
 void usage()
 {
 	printf("SoftHSM dump tool. From SoftHSM v2 object file.\n");
-	printf("Usage: softhsm2-dump-file path\n");
+	printf("Usage: softhsm2-dump-file path [token_dir] [pin]\n");
 }
+
 
 // The main function
 int main(int argc, char* argv[])
 {
 	FILE* stream;
 
-	if (argc != 2)
+	if (argc < 2)
 	{
 		usage();
 		exit(0);
 	}
+
+    ByteString soPINBlob, userPINBlob;
+    if (argc == 4) {
+        OSToken token(argv[2]);
+        token.getSOPIN(soPINBlob);
+        token.getUserPIN(userPINBlob);
+        sdm = new SecureDataManager(soPINBlob, userPINBlob);
+        ByteString pin((const unsigned char*)argv[3], strlen(argv[3]));
+        if (!sdm->loginUser(pin)) {
+            printf("Wrong PIN\n");
+            exit(1);
+        }
+    }
 
 	stream = fopen(argv[1], "r");
 	if (stream == NULL)
@@ -533,5 +560,8 @@ int main(int argc, char* argv[])
 
 	printf("Dump of object file \"%s\"\n", argv[1]);
 	dump(stream);
+    if (sdm) {
+        delete sdm;
+    }
 	exit(1);
 }
